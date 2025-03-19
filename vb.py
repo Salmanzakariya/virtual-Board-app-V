@@ -1,9 +1,11 @@
-from flask import Flask, render_template, Response
+from flask import Flask, render_template, Response, request, jsonify
 import cv2
 import mediapipe as mp
 import numpy as np
-import threading
+import os
+import time
 from flask_socketio import SocketIO, emit
+from PIL import Image
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
@@ -15,8 +17,6 @@ draw = mp.solutions.drawing_utils
 
 # Video capture
 cap = cv2.VideoCapture(0)
-
-# Set camera resolution to 640x480 (matching older code)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
@@ -35,7 +35,6 @@ tools = np.zeros((max_y, max_x - ml, 3), dtype="uint8")
 color_palette = np.zeros((300, 50, 3), dtype="uint8")
 colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255), (255, 0, 255)]
 
-# Initialize toolbar and color palette
 def init_gui():
     cv2.putText(tools, "Line", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
     cv2.putText(tools, "Rect", (60, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
@@ -48,7 +47,6 @@ def init_gui():
 
 init_gui()
 
-# Tool selection logic
 def getTool(x):
     if x < 50 + ml:
         return "line"
@@ -65,11 +63,9 @@ def getTool(x):
     else:
         return "none"
 
-# Index finger raised check
 def index_raised(yi, y9):
     return (y9 - yi) > 40
 
-# Generate video frames
 def generate_frames():
     global tool, color, thickness, prevx, prevy, mask, var_inits
 
@@ -89,17 +85,14 @@ def generate_frames():
                 xi, yi = int(landmarks.landmark[12].x * 640), int(landmarks.landmark[12].y * 480)
                 y9 = int(landmarks.landmark[9].y * 480)
 
-                # Tool selection
                 if x < max_x and y < max_y and x > ml:
                     tool = getTool(x)
                     socketio.emit('update_tool', {'tool': tool})
 
-                # Color selection
                 if tool == "color_picker" and 590 < x < 640 and 50 < y < 350:
                     color = colors[(y - 50) // 50]
                     socketio.emit('update_color', {'color': color})
 
-                # Drawing logic
                 if index_raised(yi, y9):
                     if tool == "draw":
                         cv2.line(mask, (prevx, prevy), (x, y), color, thickness)
@@ -134,17 +127,13 @@ def generate_frames():
                         var_inits = False
                     prevx, prevy = x, y
 
-        # Compose final frame
         blended = cv2.addWeighted(frame, 0.7, mask, 0.3, 0)
         blended[:max_y, ml:max_x] = cv2.addWeighted(tools, 0.7, blended[:max_y, ml:max_x], 0.3, 0)
         blended[50:350, 590:640] = color_palette
 
-        # Encode frame to JPEG
         _, buffer = cv2.imencode('.jpg', blended)
-        frame_bytes = buffer.tobytes()
-        yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+        yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
-# Routes
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -153,21 +142,42 @@ def index():
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
-# SocketIO events
-@socketio.on('update_tool')
-def handle_update_tool(data):
-    global tool
-    tool = data['tool']
+@app.route('/save_image_png', methods=['POST'])
+def save_image_png():
+    global mask
+    os.makedirs("static", exist_ok=True)
+    timestamp = int(time.time())
+    save_path = f"static/drawing_{timestamp}.png"
+    cv2.imwrite(save_path, mask)
+    return jsonify({"image": f"/{save_path}"})
 
-@socketio.on('update_color')
-def handle_update_color(data):
-    global color
-    color = tuple(data['color'])
+@app.route('/save_image_jpg', methods=['POST'])
+def save_image_jpg():
+    global mask
+    os.makedirs("static", exist_ok=True)
+    timestamp = int(time.time())
+    save_path = f"static/drawing_{timestamp}.jpg"
+    cv2.imwrite(save_path, mask)
+    return jsonify({"image": f"/{save_path}"})
 
-@socketio.on('update_thickness')
-def handle_update_thickness(data):
-    global thickness
-    thickness = data['thickness']
+@app.route('/save_image_pdf', methods=['POST'])
+def save_image_pdf():
+    global mask
+    os.makedirs("static", exist_ok=True)
+    timestamp = int(time.time())
+    save_path_img = f"static/drawing_{timestamp}.png"
+    save_path_pdf = f"static/drawing_{timestamp}.pdf"
+    cv2.imwrite(save_path_img, mask)
+    image = Image.open(save_path_img).convert('RGB')
+    image.save(save_path_pdf)
+    return jsonify({"pdf": f"/{save_path_pdf}"})
 
-if __name__ == '__main__':
+@app.route('/clear_canvas', methods=['POST'])
+def clear_canvas():
+    global mask
+    mask = np.ones((480, 640, 3), dtype="uint8") * 255
+    return jsonify({"status": "canvas cleared"})
+
+if __name__ == "__main__":
     socketio.run(app, debug=True, host='0.0.0.0')
+
