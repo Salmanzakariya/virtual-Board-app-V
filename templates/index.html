@@ -61,11 +61,17 @@
             cursor: pointer;
             border-radius: 5px;
             font-size: 14px;
-            transition: background 0.3s ease;
+            transition: all 0.3s ease;
         }
 
         button:hover {
             background: #666;
+        }
+
+        button.selected {
+            border: 2px solid #00ff00;
+            background: linear-gradient(90deg, #444, #00ff00);
+            transition: all 0.3s ease;
         }
 
         .save-button {
@@ -105,6 +111,16 @@
         function selectTool(selectedTool) {
             tool = selectedTool;
             socket.emit('update_tool', { tool: tool });
+
+            // Remove highlight from all buttons
+            document.querySelectorAll('#toolbar button').forEach(btn => btn.classList.remove('selected'));
+
+            // Add highlight to the selected tool
+            document.querySelectorAll('#toolbar button').forEach(btn => {
+                if (btn.innerText.toLowerCase() === selectedTool) {
+                    btn.classList.add('selected');
+                }
+            });
         }
 
         function saveImage(format) {
