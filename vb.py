@@ -10,64 +10,65 @@ from PIL import Image
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# MediaPipe Hands setup
+
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(min_detection_confidence=0.6, min_tracking_confidence=0.6, max_num_hands=1)
 draw = mp.solutions.drawing_utils
 
-# Video capture
+
 cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-# Drawing variables
+
 tool = "draw"
+selected_tool_index = None
 color = (255, 255, 0)
 thickness = 4
-mask = np.ones((480, 640, 3), dtype="uint8") * 255  # White background
+mask = np.ones((480, 640, 3), dtype="uint8") * 255 
 prevx, prevy = 0, 0
-var_inits = False  # For shape initialization
+var_inits = False 
 
-# Toolbar and color palette
-ml = 150  # Margin left for toolbar
+
+ml = 150  
 max_x, max_y = 300 + ml, 50
 tools = np.zeros((max_y, max_x - ml, 3), dtype="uint8")
 color_palette = np.zeros((300, 50, 3), dtype="uint8")
 colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255), (255, 0, 255)]
 
 def init_gui():
-    cv2.putText(tools, "Line", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-    cv2.putText(tools, "Rect", (60, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-    cv2.putText(tools, "Draw", (110, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-    cv2.putText(tools, "Circle", (160, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-    cv2.putText(tools, "Erase", (210, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-    cv2.putText(tools, "Color", (260, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    tool_names = ["Line", "Rect", "Draw", "Circle", "Erase", "Color"]
+    for idx, name in enumerate(tool_names):
+        cv2.putText(tools, name, (10 + idx * 50, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
     for i, color in enumerate(colors):
         color_palette[i * 50:(i + 1) * 50, :] = color
 
 init_gui()
 
-def getTool(x):
+def getToolIndex(x):
     if x < 50 + ml:
-        return "line"
+        return 0  
     elif x < 100 + ml:
-        return "rectangle"
+        return 1  
     elif x < 150 + ml:
-        return "draw"
+        return 2  
     elif x < 200 + ml:
-        return "circle"
+        return 3  
     elif x < 250 + ml:
-        return "erase"
+        return 4  
     elif x < 300 + ml:
-        return "color_picker"
+        return 5 
     else:
-        return "none"
+        return None
+
+def tool_name_by_index(index):
+    return ["line", "rectangle", "draw", "circle", "erase", "color_picker"][index]
 
 def index_raised(yi, y9):
     return (y9 - yi) > 40
 
 def generate_frames():
-    global tool, color, thickness, prevx, prevy, mask, var_inits
+    global tool, color, thickness, prevx, prevy, mask, var_inits, selected_tool_index
 
     while True:
         success, frame = cap.read()
@@ -86,8 +87,11 @@ def generate_frames():
                 y9 = int(landmarks.landmark[9].y * 480)
 
                 if x < max_x and y < max_y and x > ml:
-                    tool = getTool(x)
-                    socketio.emit('update_tool', {'tool': tool})
+                    index = getToolIndex(x)
+                    if index is not None:
+                        tool = tool_name_by_index(index)
+                        selected_tool_index = index
+                        socketio.emit('update_tool', {'tool': tool})
 
                 if tool == "color_picker" and 590 < x < 640 and 50 < y < 350:
                     color = colors[(y - 50) // 50]
@@ -127,8 +131,18 @@ def generate_frames():
                         var_inits = False
                     prevx, prevy = x, y
 
+        highlighted_tools = tools.copy()
+        if selected_tool_index is not None:
+            cv2.rectangle(
+                highlighted_tools,
+                (selected_tool_index * 50, 0),
+                (selected_tool_index * 50 + 50, max_y),
+                (0, 255, 0),
+                2
+            )
+
         blended = cv2.addWeighted(frame, 0.7, mask, 0.3, 0)
-        blended[:max_y, ml:max_x] = cv2.addWeighted(tools, 0.7, blended[:max_y, ml:max_x], 0.3, 0)
+        blended[:max_y, ml:max_x] = cv2.addWeighted(highlighted_tools, 0.9, blended[:max_y, ml:max_x], 0.1, 0)
         blended[50:350, 590:640] = color_palette
 
         _, buffer = cv2.imencode('.jpg', blended)
@@ -180,4 +194,3 @@ def clear_canvas():
 
 if __name__ == "__main__":
     socketio.run(app, debug=True, host='0.0.0.0')
-
